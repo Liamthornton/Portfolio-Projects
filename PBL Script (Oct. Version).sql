@@ -1,3 +1,4 @@
+-- Select Dates used in Reports automatically, and assign offset value if you want to run for history (1 is default)---
 DROP TABLE IF EXISTS cr_scratch.lt_pbl_dates;
 CREATE TABLE cr_scratch.lt_PBL_Dates  AS (
     WITH MonthRun as (SELECT 1 AS OffsetMonths FROM oodledata_loans.loan_agreements limit 1)
@@ -14,57 +15,86 @@ CREATE TABLE cr_scratch.lt_PBL_Dates  AS (
 );
  select * from cr_scratch.lt_pbl_dates;
 
--- Application Summary
-
-Select  TRUNC(Last_Day(created_date))                                                   AS MonthEnd
-    ,   Count(*)                                                                        AS AppVol
-    ,   Sum(total_finance_amount__c)                                                    AS AppVal
-    ,   Sum(auto_accept)                                                                AS Auto_Accept
-    ,   Sum(Case when auto_accept=0 and auto_refer=0 THEN 1 END)                        AS Auto_Declines
-    ,   Sum(Coalesce(auto_refer,1))                                                     AS Auto_Refer
-    ,   Sum(case when Coalesce(auto_refer,1)=1 and all_undewrite_accept=1 THEN 1 END)   AS Manual_Acc
-    ,   Sum(case when Coalesce(auto_refer,1)=1 and all_undewrite_accept=0 THEN 1 END)   AS Manual_Dec
-    ,   Sum(case when Coalesce(auto_refer,1)=1 and all_undewrite_accept is null THEN 1 END)
-                                                                                        AS Manual_Pend
-    ,   Sum(all_undewrite_accept)                                                       AS Final_Accepts
-    ,   Sum(CASE WHEN all_undewrite_accept=1 THEN total_finance_amount__c END)          AS Final_Accept_Amt
-    ,   Sum(CASE WHEN all_undewrite_accept=0 THEN 1 ELSE 0 END)                         AS Final_Declines
-    ,   Sum(CASE WHEN all_undewrite_accept IS NULL THEN 1 ELSE 0 END)                   AS Final_Pending
-    ,   Sum(CASE WHEN total_finance_amount>0 THEN 1 END)                                AS New_Business
-    ,   Sum(total_finance_amount)                                                       AS New_Business_Amt
+--- 1. Applications Summary - Decisioning
+-- ---
+Select TRUNC(Last_Day(created_date))                                                            AS MonthEnd
+       ,Count(*)                                                                                AS AppVol
+       ,Sum(total_finance_amount__c)                                                            AS AppVal
+       ,Sum(auto_accept)                                                                        AS Auto_Accept
+       ,Sum(case
+                when credit_search_provider = 'TU' and auto_decline = 1
+                    THEN 1
+                when credit_search_provider != 'TU' and (auto_accept = 0 and auto_refer = 0)
+                    THEN 1
+            END)                                                                                AS Auto_Declines
+       ,Sum(Coalesce(auto_refer,1))                                                             AS Auto_Refer
+       ,Sum(case
+                when credit_search_provider = 'TU' and all_undewrite_accept = 1 and auto_accept = 0
+                    then 1
+                when Coalesce(auto_refer, 1) = 1 and all_undewrite_accept = 1
+                    THEN 1
+            END)                                                                                AS Manual_Acc
+       ,Sum(case when Coalesce(auto_refer,1)=1 and all_undewrite_accept=0 THEN 1 END)           AS Manual_Dec
+       ,Sum(case when Coalesce(auto_refer,1)=1 and all_undewrite_accept is null THEN 1 END)     AS Manual_Pend
+       ,Sum(all_undewrite_accept)                                                               AS Final_Accepts
+       ,Sum(CASE WHEN all_undewrite_accept=1 THEN total_finance_amount__c END)                  AS Final_Accept_Amt
+       ,Sum(CASE WHEN all_undewrite_accept=0 THEN 1 ELSE 0 END)                                 AS Final_Declines
+       ,Sum(CASE WHEN all_undewrite_accept IS NULL THEN 1 ELSE 0 END)                           AS Final_Pending
+       ,Sum(CASE WHEN total_finance_amount>0 THEN 1 END)                                        AS New_Business
+       ,Sum(total_finance_amount)                                                               AS New_Business_Amt
 from oodledata_loan_application.funnel_summary fs
-LEFT JOIN oodledata_loans.loan_agreements as la on fs.loan_application_id=la.opportunity_id
-LEFT JOIN salesforce_ownbackup_ext.opportunity_calculated oc on fs.loan_application_id=oc.id
+LEFT JOIN oodledata_loans.loan_agreements AS la
+    on fs.loan_application_id=la.opportunity_id
+LEFT JOIN salesforce_ownbackup_ext.opportunity_calculated AS oc
+    on fs.loan_application_id=oc.id
 WHERE created_date>=(SELECT Prev_Month_Start FROM cr_scratch.lt_PBL_Dates) AND created_date<=(SELECT Prev_Month_End FROM cr_scratch.lt_PBL_Dates)
 GROUP BY 1
 ORDER BY 1;
 
--- ## 2 New Business - Define Residential Table --
 
-WITH Res_Status AS (select link.opportunity_id,
-       residence__c_defeed.applicant__c, residence__c_defeed.status__c, residence__c_defeed.createddate
-from salesforce_realtime.residence__c_defeed
-inner join oodledata_loan_application.oodle_loan_opportunity_link as link
-    on link.account_id = residence__c_defeed.applicant__c),
-     Income     AS (SELECT olol.opportunity_id as id,
-               fun.affordability_gross_salary,
-               fun.affordability_bet_monthly_salary as affordability_net_monthly_salary
+--  2. New Business - Define Residential Table ---
+
+WITH Res_Status AS (
+        select link.opportunity_id,
+               residence__c_defeed.applicant__c,
+               residence__c_defeed.status__c,
+               residence__c_defeed.createddate
+        from salesforce_realtime.residence__c_defeed
+        inner join oodledata_loan_application.oodle_loan_opportunity_link as link
+            on link.account_id = residence__c_defeed.applicant__c
+        WHERE is_current__c = 1
+        ),
+     Income     AS (
+        SELECT olol.opportunity_id as id,
+                os.gross_annual_income as gross_annual_salary
         FROM oodledata_loan_application.oodle_loan_opportunity_link as olol
-        LEFT JOIN oodledata_loan_application.funnel_summary fun on olol.opportunity_id=fun.loan_application_id
+        LEFT JOIN oodlestaging_loan_application.opportunity_summary as os
+            ON os.loan_application_id = olol.opportunity_id
         WHERE olol.exclusion_reason_generic IS NULL
-          AND olol.loan_id IS NOT NULL),
-     Loan_Aggs  AS (SELECT la.*
-       , DATE_DIFF('month', la.registration_date, la.contract_date)/12.000         AS Years
-       , Floor(DATE_DIFF('month', la.registration_date, la.contract_date)/12.000)  AS Years_Floor
-       , CASE WHEN registration_date IS NULL OR contract_date IS NULL        THEN NULL
-              WHEN DATE_DIFF('month', registration_date, contract_date) = 0  THEN -1
-              ELSE (contract_date-registration_date)/365
-              END AS Car_Age
+        AND olol.loan_id IS NOT NULL
+         ),
+     Age        AS (
+         SELECT CAST (current_age__c AS int) as age,
+                opportunity_id
+         FROM oodledata_loan_application.oodle_loan_opportunity_link as olol
+         LEFT JOIN salesforce_realtime.applicant__c_defeed as ad
+            ON ad.id = olol.applicant_id
+         WHERE olol.exclusion_reason_generic IS NULL
+         AND olol.loan_id IS NOT NULL
+        ),
+     Loan_Aggs  AS (
+        SELECT la.*,
+               DATE_DIFF('month', la.registration_date, la.contract_date)/12.000         AS Years,
+               Floor(DATE_DIFF('month', la.registration_date, la.contract_date)/12.000)  AS Years_Floor,
+               CASE WHEN registration_date IS NULL OR contract_date IS NULL THEN NULL
+                    WHEN DATE_DIFF('month', registration_date, contract_date) = 0  THEN -1
+                    ELSE (contract_date-registration_date)/365
+               END AS Car_Age
           FROM oodledata_loans.loan_agreements la
           WHERE la.contract_date>=(SELECT Rep_Month_Start FROM cr_scratch.lt_PBL_Dates) AND la.contract_date<=(SELECT Rep_Month_End FROM cr_scratch.lt_PBL_Dates)),
 --- New Business Volumes ---
 NB_Vols   AS (Select  TRUNC(Last_Day(la.contract_date))                                   AS MonthEnd
-    ,   Count(*)                                                                        AS NB_Total
+    ,   Count(distinct la.agreement_code)                                                                        AS NB_Total
     ,   Sum(la.current_glasses_value)                                                   AS Retail_Value
     ,   Sum(la.term)                                                                    AS Term
 --- Channel ---
@@ -78,22 +108,22 @@ NB_Vols   AS (Select  TRUNC(Last_Day(la.contract_date))                         
     ,   Sum(CASE WHEN la.platform is null AND (dd.introducer_category NOT IN ('DTC') OR dd.introducer_category IS NULL)
                                                                                         THEN 1 END) AS Other_Channel
 --- Customer AGE ---
-    ,   Avg(DATE_DIFF('year', od.main_applicant_date_of_birth__c, la.contract_date)*100.00)/100.00  AS Cust_Age_Avg
-    ,   Sum(CASE WHEN od.main_applicant_date_of_birth__c is not null                  AND DATE_DIFF('year', od.main_applicant_date_of_birth__c, la.contract_date)<21 THEN 1 END)
-                                                                                        AS Cust_Age_LT21
-    ,   Sum(CASE WHEN DATE_DIFF('year', od.main_applicant_date_of_birth__c, la.contract_date)>=21 AND DATE_DIFF('year', od.main_applicant_date_of_birth__c, la.contract_date)<30 THEN 1 END)
-                                                                                        AS Cust_Age_LT30
-    ,   Sum(CASE WHEN DATE_DIFF('year', od.main_applicant_date_of_birth__c, la.contract_date)>=30 AND DATE_DIFF('year', od.main_applicant_date_of_birth__c, la.contract_date)<40 THEN 1 END)
-                                                                                        AS Cust_Age_LT40
-    ,   Sum(CASE WHEN DATE_DIFF('year', od.main_applicant_date_of_birth__c, la.contract_date)>=40 AND DATE_DIFF('year', od.main_applicant_date_of_birth__c, la.contract_date)<50 THEN 1 END)
-                                                                                        AS Cust_Age_LT50
-    ,   Sum(CASE WHEN DATE_DIFF('year', od.main_applicant_date_of_birth__c, la.contract_date)>=50 AND DATE_DIFF('year', od.main_applicant_date_of_birth__c, la.contract_date)<60 THEN 1 END)
-                                                                                        AS Cust_Age_LT60
-    ,   Sum(CASE WHEN DATE_DIFF('year', od.main_applicant_date_of_birth__c, la.contract_date)>=60 AND DATE_DIFF('year', od.main_applicant_date_of_birth__c, la.contract_date)<70 THEN 1 END)
-                                                                                        AS Cust_Age_LT70
-    ,   Sum(CASE WHEN DATE_DIFF('year', od.main_applicant_date_of_birth__c, la.contract_date)>=70 THEN 1 END)
-                                                                                        AS Cust_Age_GT70
-    ,   Sum(CASE WHEN od.main_applicant_date_of_birth__c is null THEN 1 END)            AS Cust_Age_Missing
+    ,   ROUND(Avg(a.age), 2)                                        AS Cust_Age_Avg
+    ,   Sum(CASE WHEN a.age <21 THEN 1 END)
+                                                                    AS Cust_Age_LT21
+    ,   Sum(CASE WHEN a.age >= 21 AND a.age<30 THEN 1 END)
+                                                                    AS Cust_Age_LT30
+    ,   Sum(CASE WHEN a.age >=30 AND a.age <40 THEN 1 END)
+                                                                    AS Cust_Age_LT40
+    ,   Sum(CASE WHEN a.age>=40 AND a.age <50 THEN 1 END)
+                                                                    AS Cust_Age_LT50
+    ,   Sum(CASE WHEN a.age>=50 AND a.age <60 THEN 1 END)
+                                                                    AS Cust_Age_LT60
+    ,   Sum(CASE WHEN a.age>=60 AND a.age <70 THEN 1 END)
+                                                                    AS Cust_Age_LT70
+    ,   Sum(CASE WHEN a.age >=70 THEN 1 END)
+                                                                    AS Cust_Age_GT70
+    ,   Sum(CASE WHEN a.age is null THEN 1 END)                     AS Cust_Age_Missing
 --- Employment Status ---
     ,   SUM(CASE WHEN acc.employmentstatus__c in ('EMPLOYED','Director') THEN 1 END)    AS Employed
     ,   SUM(CASE WHEN acc.employmentstatus__c in ('Self-Employed','SELF EMPLOYED') THEN 1 END)
@@ -111,8 +141,8 @@ NB_Vols   AS (Select  TRUNC(Last_Day(la.contract_date))                         
     ,   SUM(CASE WHEN rs.status__c in ('HM Forces') THEN 1 END)                               AS Resident_Other
     ,   SUM(CASE WHEN rs.status__c in ('Not Declared') OR rs.status__c IS NULL THEN 1 END)      AS Resident_Unknown
 --- Customer Income
-    ,   SUM(CASE WHEN i.affordability_gross_salary IS NOT NULL AND i.affordability_gross_salary>=0
-                          AND i.affordability_gross_salary<=150000 THEN 1 END)
+    ,   SUM(CASE WHEN i.gross_annual_salary IS NOT NULL AND i.gross_annual_salary>=0
+                          AND i.gross_annual_salary<=150000 THEN 1 END)
                                                                                         AS GrossIncome
 --- Car Age ---
     ,  Avg(CASE WHEN DATE_DIFF('month', la.registration_date, la.contract_date) !=0 THEN DATE_DIFF('month', la.registration_date, la.contract_date)::Decimal(10,2) END)
@@ -157,6 +187,7 @@ LEFT JOIN salesforce_ownbackup_ext.opportunity o on la.opportunity_id=o.id
 LEFT JOIN (SELECT DISTINCT id, employmentstatus__c FROM salesforce_ownbackup_ext.account where ispersonaccount=true) acc on acc.id=la.main_borrower_account_id
 LEFT JOIN Res_Status rs ON rs.opportunity_id=la.opportunity_id
 LEFT JOIN income i ON la.opportunity_id=i.id
+LEFT JOIN age as a ON la.opportunity_id = a.opportunity_id
 LEFT JOIN salesforce_realtime.opportunity_defeed od on la.opportunity_id=od.id
 --LEFT JOIN (SELECT DISTINCT account_id, gross_income FROM oodledata.customer_dim) j ON la.main_borrower_account_id=j.account_id Note: Alternate source of income
 WHERE la.contract_date>=(SELECT Rep_Month_Start FROM cr_scratch.lt_PBL_Dates) AND la.contract_date<=(SELECT Rep_Month_End FROM cr_scratch.lt_PBL_Dates)
@@ -179,22 +210,22 @@ NB_Values AS (Select  TRUNC(Last_Day(la.contract_date))                         
     ,   Sum(CASE WHEN la.platform is null AND (dd.introducer_category NOT IN ('DTC') OR dd.introducer_category IS NULL)
                                                                                         THEN la.total_finance_amount END) AS Other_Channel
 --- Customer AGE ---
-    ,   Avg(DATE_DIFF('year', od.main_applicant_date_of_birth__c, la.contract_date))                AS Cust_Age_Avg
-    ,   Sum(CASE WHEN od.main_applicant_date_of_birth__c is not null                  AND DATE_DIFF('year', od.main_applicant_date_of_birth__c, la.contract_date)<21 THEN la.total_finance_amount END)
-                                                                                        AS Cust_Age_LT21
-    ,   Sum(CASE WHEN DATE_DIFF('year', od.main_applicant_date_of_birth__c, la.contract_date)>=21 AND DATE_DIFF('year', od.main_applicant_date_of_birth__c, la.contract_date)<30 THEN la.total_finance_amount END)
-                                                                                        AS Cust_Age_LT30
-    ,   Sum(CASE WHEN DATE_DIFF('year', od.main_applicant_date_of_birth__c, la.contract_date)>=30 AND DATE_DIFF('year', od.main_applicant_date_of_birth__c, la.contract_date)<40 THEN la.total_finance_amount END)
-                                                                                        AS Cust_Age_LT40
-    ,   Sum(CASE WHEN DATE_DIFF('year', od.main_applicant_date_of_birth__c, la.contract_date)>=40 AND DATE_DIFF('year', od.main_applicant_date_of_birth__c, la.contract_date)<50 THEN la.total_finance_amount END)
-                                                                                        AS Cust_Age_LT50
-    ,   Sum(CASE WHEN DATE_DIFF('year', od.main_applicant_date_of_birth__c, la.contract_date)>=50 AND DATE_DIFF('year', od.main_applicant_date_of_birth__c, la.contract_date)<60 THEN la.total_finance_amount END)
-                                                                                        AS Cust_Age_LT60
-    ,   Sum(CASE WHEN DATE_DIFF('year', od.main_applicant_date_of_birth__c, la.contract_date)>=60 AND DATE_DIFF('year', od.main_applicant_date_of_birth__c, la.contract_date)<70 THEN la.total_finance_amount END)
-                                                                                        AS Cust_Age_LT70
-    ,   Sum(CASE WHEN DATE_DIFF('year', od.main_applicant_date_of_birth__c, la.contract_date)>=70 THEN la.total_finance_amount END)
-                                                                                        AS Cust_Age_GT70
-    ,   Sum(CASE WHEN od.main_applicant_date_of_birth__c is null THEN la.total_finance_amount END)            AS Cust_Age_Missing
+    ,   ROUND(Avg(a.age), 2)  AS Cust_Age_Avg
+    ,   Sum(CASE WHEN a.age <21 THEN la.total_finance_amount END)
+                                                                    AS Cust_Age_LT21
+    ,   Sum(CASE WHEN a.age >= 21 AND a.age<30 THEN la.total_finance_amount END)
+                                                                    AS Cust_Age_LT30
+    ,   Sum(CASE WHEN a.age >=30 AND a.age <40 THEN la.total_finance_amount END)
+                                                                    AS Cust_Age_LT40
+    ,   Sum(CASE WHEN a.age>=40 AND a.age <50 THEN la.total_finance_amount END)
+                                                                    AS Cust_Age_LT50
+    ,   Sum(CASE WHEN a.age>=50 AND a.age <60 THEN la.total_finance_amount END)
+                                                                    AS Cust_Age_LT60
+    ,   Sum(CASE WHEN a.age>=60 AND a.age <70 THEN la.total_finance_amount END)
+                                                                    AS Cust_Age_LT70
+    ,   Sum(CASE WHEN a.age >=70 THEN la.total_finance_amount END)
+                                                                    AS Cust_Age_GT70
+    ,   Sum(CASE WHEN a.age is null THEN la.total_finance_amount END)                     AS Cust_Age_Missing
 --- Employment Status ---
     ,   SUM(CASE WHEN acc.employmentstatus__c in ('EMPLOYED','Director') THEN la.total_finance_amount END)    AS Employed
     ,   SUM(CASE WHEN acc.employmentstatus__c in ('Self-Employed','SELF EMPLOYED') THEN la.total_finance_amount END)
@@ -212,8 +243,8 @@ NB_Values AS (Select  TRUNC(Last_Day(la.contract_date))                         
     ,   SUM(CASE WHEN rs.status__c in ('HM Forces') THEN la.total_finance_amount END)                               AS Resident_Other
     ,   SUM(CASE WHEN rs.status__c in ('Not Declared') OR rs.status__c IS NULL THEN la.total_finance_amount END)      AS Resident_Unknown
 --- Customer Income
-    ,   SUM(CASE WHEN i.affordability_gross_salary IS NOT NULL AND i.affordability_gross_salary>=0
-                        AND i.affordability_gross_salary<=150000 THEN i.affordability_gross_salary END)       AS GrossIncome
+    ,   SUM(CASE WHEN i.gross_annual_salary IS NOT NULL AND i.gross_annual_salary>=0
+                        AND i.gross_annual_salary<=150000 THEN i.gross_annual_salary END)       AS GrossIncome
 --- Car Age ---
     ,  Avg(DATE_DIFF('month', la.registration_date, la.contract_date)::Decimal(10,2))                         AS Avg_CarAge
     ,  Sum(CASE WHEN la.Car_Age=-1                      THEN la.total_finance_amount END)                     AS Car_AgeNew
@@ -254,8 +285,9 @@ LEFT JOIN salesforce_ownbackup_ext.opportunity_calculated oc on la.opportunity_i
 LEFT JOIN oodledata.dealer_dim dd on la.introducer_id=dd.dealer_id
 LEFT JOIN salesforce_ownbackup_ext.opportunity o on la.opportunity_id=o.id
 LEFT JOIN (SELECT DISTINCT id, employmentstatus__c FROM salesforce_ownbackup_ext.account where ispersonaccount=true) acc on acc.id=la.main_borrower_account_id
-LEFT JOIN Res_Status rs ON rs.opportunity_id = la.opportunity_id
+LEFT JOIN Res_Status rs ON rs.opportunity_id=la.opportunity_id
 LEFT JOIN income i ON la.opportunity_id=i.id
+LEFT JOIN age as a ON la.opportunity_id = a.opportunity_id
 LEFT JOIN salesforce_realtime.opportunity_defeed od on la.opportunity_id=od.id
 WHERE la.contract_date>=(SELECT Rep_Month_Start FROM cr_scratch.lt_PBL_Dates) AND la.contract_date<=(SELECT Rep_Month_End FROM cr_scratch.lt_PBL_Dates)
 GROUP BY 1
@@ -264,14 +296,12 @@ ORDER BY 1)
 Select * from NB_Vols UNION ALL Select * From NB_Values;
 
 
--- 3 Portfolio Volumes --
-
+--  3. Portfolio Volumes
+Drop table cr_scratch.lt_VehicleSale;
+Drop table cr_scratch.lt_Termination;
+Drop table cr_scratch.lt_Repo;
 --- Create a table with dates of physical repossession of vehicle ---
-Drop table if exists cr_scratch.lt_VehicleSale;
-Drop table if exists cr_scratch.lt_Repo;
-Drop table if exists cr_scratch.lt_Termination;
-
-Create Table cr_scratch.LT_Repo AS
+Create Table cr_scratch.lt_Repo AS
     (select har.agreement_code, customer__c
          , har.current_workflow_status, to_date(har.dateat, 'yyyy-mm-dd') as dt
          , Trunc(act.createddate) AS RepoDate
@@ -280,9 +310,9 @@ Create Table cr_scratch.LT_Repo AS
     left join salesforce_ownbackup_ext.contact cnt on cnt.id = act.customer__c
     left join salesforce_ownbackup_ext.oodle_loan__c olc on cnt.accountid= olc.main_borrower__c
     left join riskreports_ext.hybridagreementreport har on olc.vienna_agreement_code__c=har.agreement_code and to_date(har.dateat, 'yyyy-mm-dd')=Trunc(act.createddate)
-    WHERE act.row_number=1)
+    WHERE act.row_number=1);
 --- Create a table with dates of physical sale of vehicle ---
-Create Table cr_scratch.LT_VehicleSale AS
+Create Table cr_scratch.lt_VehicleSale AS
     (select har.agreement_code
          , har.current_workflow_status, to_date(har.dateat, 'yyyy-mm-dd') as dt
          , Trunc(act.createddate) AS VehSaleDate
@@ -295,9 +325,9 @@ Create Table cr_scratch.LT_VehicleSale AS
     left join salesforce_ownbackup_ext.contact cnt on cnt.id = act.customer__c
     left join salesforce_ownbackup_ext.oodle_loan__c olc on cnt.accountid= olc.main_borrower__c
     left join riskreports_ext.hybridagreementreport har on olc.vienna_agreement_code__c=har.agreement_code and to_date(har.dateat, 'yyyy-mm-dd')=Trunc(act.createddate)
-    WHERE act.row_number=1)
+    WHERE act.row_number=1);
 --- Create a table with dates of when the account was "terminated" ---
-Create Table cr_scratch.LT_Termination AS
+Create Table cr_scratch.lt_Termination AS
     (select har.agreement_code
          , har.current_workflow_status, to_date(har.dateat, 'yyyy-mm-dd') as dt
          , Trunc(act.createddate) AS TerminationDate
@@ -307,15 +337,14 @@ Create Table cr_scratch.LT_Termination AS
     left join salesforce_ownbackup_ext.oodle_loan__c olc on cnt.accountid= olc.main_borrower__c
     left join riskreports_ext.hybridagreementreport har on olc.vienna_agreement_code__c=har.agreement_code and to_date(har.dateat, 'yyyy-mm-dd')=Trunc(act.createddate)
     WHERE act.row_number=1);
-
-DROP TABLE IF EXISTS cr_scratch.lt_stockposition;
-CREATE TABLE cr_scratch.lt_stockposition AS (
+DROP TABLE cr_scratch.lt_StockPosition;
+CREATE TABLE cr_scratch.lt_StockPosition AS (
 With SDTimeline AS
     (Select sd.agreement_code, sd.type, sd.processed_date, sd.amount, sd.date AS CDR_Date, sd.sf_date, sd.vienna_date, t.TerminationDate, r.RepoDate, vs.VehSaleDate, vs.ActualSaleDate,vs.GrossSaleAmt
     from oodledata_loans.settlements_and_defaults AS sd
-    left join cr_scratch.LT_Termination as t   ON t.agreement_code = sd.agreement_code
-    Left Join cr_scratch.LT_Repo as r          ON r.agreement_code = sd.agreement_code
-    left join cr_scratch.LT_VehicleSale as vs  ON vs.agreement_code = sd.agreement_code
+    left join cr_scratch.lt_Termination as t   ON t.agreement_code = sd.agreement_code
+    Left Join cr_scratch.lt_Repo as r          ON r.agreement_code = sd.agreement_code
+    left join cr_scratch.lt_VehicleSale as vs  ON vs.agreement_code = sd.agreement_code
     order by cdr_date),
 ClosuresAtTerm AS
     (SELECT la.agreement_code, la.contract_date, la.contract_end_date, lt.cash_transactions_cumulative, la.total_finance_amount, la.total_payable
@@ -416,8 +445,8 @@ LEFT JOIN ViennaChanges vc ON har.agreement_code=vc.agreement_code);
 SELECT sp.RepMon
         , SUM(CASE WHEN sp.current_workflow_status in ('AG_LIVE_PRIMARY') THEN 1
                    WHEN (sp.type in ('Default','VT - Default','VT') AND
-                      (sp.VehSaleDate IS NULL OR sp.VehSaleDate>RepMon)) THEN 1 END)                     AS TotalPortfolio
-        ,SUM(CASE WHEN (sp.type in ('Default') AND last_day(sp.terminationdate)=RepMon)
+                        (sp.VehSaleDate IS NULL OR sp.VehSaleDate>RepMon)) THEN 1 END)                      AS TotalPortfolio
+       , SUM(CASE WHEN (sp.type in ('Default') AND last_day(sp.terminationdate)=RepMon)
                     OR (sp.type in ('VT - Default','VT','Settlement','Unwind') AND last_day(sp.processed_date)=RepMon)
                     OR last_day(sp.contract_end_date)= RepMon
                     OR last_day(sp.InsuranceDate)= RepMon THEN 1 END)                                      AS Total_Closed
@@ -555,13 +584,14 @@ SELECT sp.RepMon
 --- Volume made single payment ----
 ,   SUM(CASE WHEN date_diff('Month', sp.contract_date, sp.repmon)=3 AND lt.instalments_satisfied=1 AND endstatus >=0 THEN 1 END) AS Vol3OnePmt
 ,   SUM(CASE WHEN date_diff('Month', sp.contract_date, sp.repmon)=6 AND lt.instalments_satisfied=1 AND endstatus >=0 THEN 1 END) AS Vol6OnePmt
-FROM cr_scratch.LT_StockPosition sp
+FROM cr_scratch.lt_StockPosition sp
 Left join oodledata_loans.loan_timeline lt on sp.agreement_code=lt.agreement_code AND sp.repmon=lt.date
 where repmon=(SELECT Rep_Month_End FROM cr_scratch.lt_PBL_Dates)
 GROUP BY 1;
 
--- ## 4 Portfolio Values --
 
+
+-- 4. Portfolio Values
 SELECT sp.RepMon
         , SUM(CASE WHEN sp.current_workflow_status in ('AG_LIVE_PRIMARY') THEN capital_outstanding_exc
                    WHEN (sp.type in ('Default','VT - Default','VT') AND
@@ -586,7 +616,7 @@ SELECT sp.RepMon
 ,   Sum(CASE WHEN last_day(vehsaledate)=repmon AND COALESCE(grosssaleamt,sp.netsaleamt)<Coalesce(sp.settlementamt,sp.crystalisedfrom,1) Then Coalesce(sp.settlementamt,sp.crystalisedfrom,1) END)  AS VehicleLossBal
 ,   Sum(CASE WHEN last_day(vehsaledate)=repmon AND COALESCE(grosssaleamt,sp.netsaleamt)<sp.Crystalisedfrom+1 Then 0 END)              AS VehicleLossCapVal
 ,   Sum(CASE WHEN last_day(vehsaledate)=repmon AND COALESCE(grosssaleamt,sp.netsaleamt)<Coalesce(sp.settlementamt,sp.crystalisedfrom,1) Then grosssaleamt END)   AS VehicleLossSoldPrice
-FROM cr_scratch.LT_StockPosition sp
+FROM cr_scratch.lt_StockPosition sp
 left join oodledata_loans.loan_agreements la on sp.agreement_code=la.agreement_code
 where repmon=(SELECT Rep_Month_End FROM cr_scratch.lt_PBL_Dates)
 GROUP BY 1;
@@ -618,9 +648,8 @@ SELECT sp.RepMon
             END) AS ForcedPossessionMileage
         , SUM(CASE WHEN 1=2 THEN 1 END) AS PossessionAfterROG
         , SUM(CASE WHEN 1=2 THEN 1 END) AS PossessionNoROG
-FROM cr_scratch.LT_StockPosition sp
+FROM cr_scratch.lt_StockPosition sp
 left join oodledata_loans.loan_agreements la on sp.agreement_code=la.agreement_code
 where repmon=(SELECT Rep_Month_End FROM cr_scratch.lt_PBL_Dates) and la.contract_date<=(SELECT Rep_Month_End FROM cr_scratch.lt_PBL_Dates)
 GROUP BY 1,2
 order by 1,2;
-
