@@ -241,7 +241,7 @@ SELECT COUNT(*),
        SUM(capital_balance)
 from mar_por;
 
-
+-- Setting up settlements and defaults --
 DROP TABLE IF EXISTS set_def;
 CREATE TEMP TABLE set_def as (
     with sd as (
