@@ -41,7 +41,7 @@ CREATE TEMP TABLE portfolio as (
                     where date = '2020-03-08' and is_live) as march_status
         ON march_status.agreement_code = lt.agreement_code
         WHERE is_live
-        AND date = '2020-10-17'
+        AND date = '2020-10-17' AND contract_date < '2020-04-01'
     ),
          covid_cases as (
              select agreement_code,
