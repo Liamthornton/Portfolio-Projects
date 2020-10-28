@@ -28,12 +28,7 @@ Select TRUNC(Last_Day(created_date))                                            
                     THEN 1
             END)                                                                                AS Auto_Declines
        ,Sum(Coalesce(auto_refer,1))                                                             AS Auto_Refer
-       ,Sum(case
-                when credit_search_provider = 'TU' and all_undewrite_accept = 1 and auto_accept = 0
-                    then 1
-                when Coalesce(auto_refer, 1) = 1 and all_undewrite_accept = 1
-                    THEN 1
-            END)                                                                                AS Manual_Acc
+       ,Sum(case when Coalesce(auto_refer, 1) = 1 and all_undewrite_accept = 1 THEN 1 END)      AS Manual_Acc
        ,Sum(case when Coalesce(auto_refer,1)=1 and all_undewrite_accept=0 THEN 1 END)           AS Manual_Dec
        ,Sum(case when Coalesce(auto_refer,1)=1 and all_undewrite_accept is null THEN 1 END)     AS Manual_Pend
        ,Sum(all_undewrite_accept)                                                               AS Final_Accepts
@@ -74,7 +69,7 @@ WITH Res_Status AS (
         AND olol.loan_id IS NOT NULL
          ),
      Age        AS (
-         SELECT CAST (current_age__c AS int) as age,
+         SELECT ROUND(CAST(DATEDIFF(day, date_of_birth__c, (SELECT Rep_Month_End FROM cr_scratch.lt_PBL_Dates)) as DECIMAL(10,5))/365, 2)  as age,
                 opportunity_id
          FROM oodledata_loan_application.oodle_loan_opportunity_link as olol
          LEFT JOIN salesforce_realtime.applicant__c_defeed as ad
