@@ -1,80 +1,89 @@
--- Loans with initial payment deferral --
+-- Forbearances Table --
+DROP TABLE IF EXISTS forbearances;
+CREATE temp TABLE forbearances as (
+    SELECT agreement_code                                                                                               as agreement_code,
+           min(case when f.type in ('Retrospective Payment Holiday','Payment Holiday')
+                    and f.status in ('Agreed','Expired')
+                    and f.booking_status in ('Completed','Reviewed')
+                    then created_date::date
+               end)                                                                                                     as ph_created_date,
+           min(case when f.type in ('Retrospective Payment Holiday','Payment Holiday')
+                    and f.status in ('Agreed','Expired')
+                    and f.booking_status in ('Completed','Reviewed')
+                    then start_date::date
+               end)                                                                                                     as ph_start_date,
+           max(case when f.type in ('Retrospective Payment Holiday','Payment Holiday')
+                    and f.status in ('Agreed','Expired')
+                    and f.booking_status in ('Completed','Reviewed')
+                    then end_date::date
+               end)                                                                                                     as ph_end_date,
+           min(case when f.type in ('Payment Reduction')
+                    and f.status in ('Agreed','Expired')
+                    and f.booking_status in ('Completed','Reviewed')
+                    then created_date::Date
+               end)                                                                                                     as rmp_created_date,
+           min(case when f.type in ('Payment Reduction')
+                    and f.status in ('Agreed','Expired')
+                    and f.booking_status in ('Completed','Reviewed')
+                    then start_date::date
+               end)                                                                                                     as rmp_start_date,
+           max(case when f.type in ('Payment Reduction')
+                    and f.status in ('Agreed','Expired')
+                    and f.booking_status in ('Completed','Reviewed')
+                    then end_date::date
+               end)                                                                                                     as rmp_end_date,
+           min(case when f.type ='Additional Payment Holiday'
+                    and f.status in ('Agreed', 'Expired')
+                    and f.booking_status in ('Completed', 'Reviewed')
+                    then start_date::date
+               end)                                                                                                     as add_ph_start_date,
+           max(case when f.type ='Additional Payment Holiday'
+                    and f.status in ('Agreed', 'Expired')
+                    and f.booking_status in ('Completed', 'Reviewed')
+                    then end_date::date
+               end)                                                                                                     as add_ph_end_date,
+           least(greatest(ph_start_date, ph_created_date),greatest(rmp_start_date, rmp_created_date))                   as first_fb_start_date,
+           least(ph_end_date,rmp_end_date)                                                                              as first_fb_end_date
+    FROM oodledata.forbearance as f
+    GROUP BY 1);
+SELECT *
+FROM forbearances;
 
-DROP TABLE IF EXISTS covid_loans;
-CREATE temp TABLE covid_loans as
-SELECT la.loan_id,
-       agreement_code
-FROM oodledata.customer_dim c
-JOIN oodledata_loans.loan_agreements la
-    on la.main_borrower_account_id = c.account_id
-where c.total_months_of_forbearance>=1;
-
-
--- Initial payment deferral start and end dates --
-
-DROP TABLE IF EXISTS first_fb;
-CREATE TEMP TABLE first_fb as (
-    with fb_start as (
-        SELECT cl.agreement_code,
-               MIN(start_date::date) start_date
-        FROM covid_loans as cl
-        LEFT JOIN oodledata.forbearance as fb
-            ON fb.agreement_code = cl.agreement_code
-        WHERE fb.status in ('Agreed', 'Expired')
-          and fb.booking_status in ('Completed', 'Reviewed')
-          and type in ('Payment Holiday', 'Retrospective Payment Holiday')
-          and fb.agreement_code = cl.agreement_code
-        GROUP BY 1
-        )
--- TABLE DEFINITION --
-SELECT fbs.agreement_code,
-       fbs.start_date as start_date,
-       min(end_date::date) as end_date
-FROM fb_start as fbs
-LEFT JOIN oodledata.forbearance as fb
-    ON fb.agreement_code = fbs.agreement_code
-    and fb.start_date = fbs.start_date
-GROUP BY 1,2);
-select *
-from first_fb;
-
-
--- Arrears Statuses --
+-- Arrears Status' --
 DROP TABLE IF EXISTS arrears;
 CREATE TEMP TABLE arrears as (
 with pre_ph_arr as (
-    SELECT cl.agreement_code,
+    SELECT f.agreement_code,
            CASE
-               WHEN arrears_status = 'Up-to-Date' then -1
-               WHEN arrears_status = '0-Down' then 0
-               WHEN arrears_status = '1-Down' then 1
-               WHEN arrears_status = '2-Down' then 2
-               WHEN arrears_status = '3-Down' then 3
-               WHEN arrears_status = '4-Down' then 4
-               WHEN arrears_status = '5+ Down' then 5
+               WHEN payment_reduction_adjusted_arrears_status = 'Up-to-Date' then -1
+               WHEN payment_reduction_adjusted_arrears_status = '0-Down' then 0
+               WHEN payment_reduction_adjusted_arrears_status = '1-Down' then 1
+               WHEN payment_reduction_adjusted_arrears_status = '2-Down' then 2
+               WHEN payment_reduction_adjusted_arrears_status = '3-Down' then 3
+               WHEN payment_reduction_adjusted_arrears_status = '4-Down' then 4
+               WHEN payment_reduction_adjusted_arrears_status = '5+ Down' then 5
                ELSE null
                END as pre_arr
-    FROM covid_loans as cl
-             LEFT JOIN first_fb as ffb
-                       ON ffb.agreement_code = cl.agreement_code
-             LEFT JOIN oodledata_loans.loan_timeline as lt
-                       ON lt.agreement_code = cl.agreement_code and lt.date = ffb.start_date
+    FROM forbearances as f
+    LEFT JOIN oodledata_loans.loan_timeline as lt
+        ON lt.agreement_code = f.agreement_code and lt.date = f.first_fb_start_date
 ),
      june_onward_arr as (
-    SELECT cl.agreement_code,
+    SELECT f.agreement_code,
            date_part('month', lt.date) arr_month,
-           CASE WHEN arrears_status = 'Up-to-Date' then -1
-                WHEN arrears_status = '0-Down' then 0
-                WHEN arrears_status = '1-Down' then 1
-                WHEN arrears_status = '2-Down' then 2
-                WHEN arrears_status = '3-Down' then 3
-                WHEN arrears_status = '4-Down' then 4
-                WHEN arrears_status = '5+ Down' then 5
-           ELSE NULL
+            CASE
+               WHEN payment_reduction_adjusted_arrears_status = 'Up-to-Date' then -1
+               WHEN payment_reduction_adjusted_arrears_status = '0-Down' then 0
+               WHEN payment_reduction_adjusted_arrears_status = '1-Down' then 1
+               WHEN payment_reduction_adjusted_arrears_status = '2-Down' then 2
+               WHEN payment_reduction_adjusted_arrears_status = '3-Down' then 3
+               WHEN payment_reduction_adjusted_arrears_status = '4-Down' then 4
+               WHEN payment_reduction_adjusted_arrears_status = '5+ Down' then 5
+               ELSE null
            END as arr_status
-    FROM covid_loans as cl
+    FROM forbearances as f
     LEFT JOIN oodledata_loans.loan_timeline as lt
-        ON lt.agreement_code = cl.agreement_code
+        ON lt.agreement_code = f.agreement_code
     WHERE date IN (
         SELECT last_day(lt.date)
         FROM oodledata_loans.loan_timeline as lt
@@ -102,53 +111,23 @@ SELECT bph.agreement_code,
        sep_arr,
        oct_arr,
        nov_arr
-FROM covid_loans as cl
+FROM forbearances as f
 LEFT JOIN pre_ph_arr as bph
-    ON bph.agreement_code = cl.agreement_code
+    ON bph.agreement_code = f.agreement_code
 LEFT JOIN post_ph_arr as aph
-    ON aph.agreement_code = cl.agreement_code);
-
-
--- Loans with payment holiday extension --
-
-DROP TABLE IF EXISTS add_ph;
-CREATE TEMP TABLE add_ph as (
-with add_ph_start as (
-    SELECT cl.agreement_code,
-           min(fb.start_date) as add_ph_start_date
-    FROM covid_loans as cl
-    LEFT JOIN oodledata.forbearance as fb
-        ON cl.agreement_code = fb.agreement_code
-    LEFT JOIN first_fb as ffb
-        ON ffb.agreement_code = fb.agreement_code
-    WHERE type = 'Additional Payment Holiday'
-    GROUP BY 1
-)
--- Table Definition --
-SELECT add.agreement_code,
-       add_ph_start_date,
-       min(fb.end_date) as add_ph_end_date
-FROM add_ph_start as add
-LEFT JOIN oodledata.forbearance as fb
-    ON add.agreement_code = fb.agreement_code
-    and add.add_ph_start_date = fb.start_date
-    and fb.type = 'Additional Payment Holiday'
-GROUP BY 1,2);
-SELECT *
-FROM add_ph;
+    ON aph.agreement_code = f.agreement_code);
 
 
 -- Settlements and Defaults --
-
 DROP TABLE IF EXISTS sets_defs;
 CREATE TEMP TABLE sets_defs as (
     with cases as (
-        SELECT cl.agreement_code,
+        SELECT f.agreement_code,
                type,
                MIN(date) as sd_date
-        FROM covid_loans as cl
+        FROM forbearances as f
         LEFT JOIN oodledata_loans.settlements_and_defaults as sd
-            ON sd.agreement_code = cl.agreement_code
+            ON sd.agreement_code = f.agreement_code
         WHERE type IN ('VT - Default', 'Default', 'VT', 'Settlement')
         GROUP BY 1, 2
     )
@@ -163,9 +142,7 @@ CREATE TEMP TABLE sets_defs as (
 SELECT *
 FROM sets_defs;
 
-
--- Balances for S&D --
-
+-- Balances --
 DROP TABLE IF EXISTS balances;
 CREATE TEMP TABLE balances as (
 with balances as (
@@ -180,7 +157,7 @@ with balances as (
                   )
     AND agreement_code IN (
                    SELECT agreement_code
-                   FROM covid_loans
+                   FROM forbearances
                    )
 )
 SELECT agreement_code,
@@ -196,9 +173,13 @@ GROUP BY 1);
 -- Final Table Definition --
 DROP TABLE IF EXISTS PBL;
 CREATE TEMP TABLE PBL as (
-    SELECT cl.agreement_code,
-           ffb.start_date,
-           ffb.end_date,
+    SELECT f.agreement_code,
+           f.first_fb_start_date,
+           f.first_fb_end_date,
+           f.rmp_start_date,
+           f.rmp_end_date,
+           f.add_ph_end_date,
+           f.add_ph_start_date,
            arr.pre_arr,
            arr.jun_arr,
            arr.jul_arr,
@@ -206,8 +187,6 @@ CREATE TEMP TABLE PBL as (
            arr.sep_arr,
            arr.oct_arr,
            arr.nov_arr,
-           add.add_ph_start_date,
-           add.add_ph_end_date,
            sd.type,
            sd.sd_date,
            sd.sd_balance,
@@ -217,96 +196,93 @@ CREATE TEMP TABLE PBL as (
            bal.sept_bal,
            bal.oct_bal,
            bal.nov_bal
-    FROM covid_loans as cl
-        LEFT JOIN first_fb as ffb
-            ON ffb.agreement_code = cl.agreement_code
+    FROM forbearances as f
         LEFT JOIN arrears as arr
-            ON arr.agreement_code = cl.agreement_code
-        LEFT JOIN add_ph as add
-            ON add.agreement_code = cl.agreement_code
+            ON arr.agreement_code = f.agreement_code
         LEFT JOIN sets_defs as sd
-            ON sd.agreement_code = cl.agreement_code
+            ON sd.agreement_code = f.agreement_code
         LEFT JOIN balances as bal
-            ON bal.agreement_code = cl.agreement_code
+            ON bal.agreement_code = f.agreement_code
 );
-SELECT count(*)
+SELECT *
 FROM pbl;
 
-
 -- MONTHLY REPORT --
-SELECT SUM(case when start_date <= '2020-11-30' THEN 1 ELSE 0 END)             as vol_ph,
-       SUM(case when start_date <= '2020-11-30' THEN jul_bal ELSE 0 END)       as val_ph,
-       SUM(case when start_date <= '2020-11-30' AND
-                     end_date > '2020-11-30' AND
-                     (sd_date > '2020-11-30' or sd_date IS NULL)
+SELECT SUM(case when first_fb_start_date <= '2020-06-30' THEN 1 ELSE 0 END)             as vol_ph,
+       SUM(case when first_fb_start_date <= '2020-06-30' THEN greatest(jun_bal, sd_balance) ELSE 0 END)       as val_ph,
+       SUM(case when first_fb_start_date <= '2020-06-30' AND
+                     first_fb_end_date > '2020-06-30' AND
+                     (sd_date > '2020-06-30' or sd_date IS NULL)
                 THEN 1
                 ELSE 0
            END)                                                               as vol_first_ph,
-       SUM(case when start_date <= '2020-11-30' AND
-                     end_date > '2020-11-30' AND
-                     (sd_date > '2020-11-30' or sd_date IS NULL)
-                THEN nov_bal
+       SUM(case when first_fb_start_date <= '2020-06-30' AND
+                     first_fb_end_date > '2020-06-30' AND
+                     (sd_date > '2020-06-30' or sd_date IS NULL)
+                THEN jun_bal
                 ELSE 0
            END)                                                               as val_first_ph,
-       SUM(case when add_ph_start_date is not null AND
-                     add_ph_start_date <= '2020-11-30' AND
-                     add_ph_end_date > '2020-11-30' AND
-                     end_date < '2020-11-30'
+       SUM(case when first_fb_end_date <= '2020-06-30' AND
+                     (add_ph_start_date notnull or (rmp_start_date != first_fb_start_date AND rmp_start_date notnull)) AND
+                     (add_ph_start_date <= '2020-06-30' or rmp_start_date <= '2020-06-30') AND
+                     (add_ph_end_date > '2020-06-30' or rmp_end_date > '2020-06-30') AND
+                     (sd_date > '2020-06-30' or sd_date IS NULL)
                 THEN 1
                 ELSE 0
            END)                                                               as vol_ext_ph,
-       SUM(case when add_ph_start_date is not null AND
-                     add_ph_start_date <= '2020-11-30' AND
-                     add_ph_end_date > '2020-11-30' AND
-                     end_date < '2020-11-30'
-                THEN nov_bal
+       SUM(case when first_fb_end_date <= '2020-06-30' AND
+                     (add_ph_start_date notnull or (rmp_start_date != first_fb_start_date AND rmp_start_date notnull)) AND
+                     (add_ph_start_date <= '2020-06-30' or rmp_start_date <= '2020-06-30') AND
+                     (add_ph_end_date > '2020-06-30' or rmp_end_date > '2020-06-30') AND
+                     (sd_date > '2020-06-30' or sd_date IS NULL)
+                THEN jun_bal
                 ELSE 0
            END)                                                               as val_ext_ph,
-       SUM(case when end_date < '2020-11-30' AND
---                      (add_ph_start_date is NULL OR add_ph_end_date < '2020-06-30') AND
-                     (sd_date is NULL or sd_date > '2020-11-30') AND
-                     pre_arr >= nov_arr
+       SUM(case when (greatest(first_fb_end_date, add_ph_end_date, rmp_end_date) <= '2020-06-30') AND
+                     (sd_date is NULL or sd_date > '2020-06-30') AND
+                     pre_arr >= jun_arr
                 THEN 1
                 ELSE 0
            END)                                                               AS vol_perf,
-       SUM(case when end_date < '2020-11-30' AND
---                      (add_ph_start_date IS NULL or add_ph_end_date < '2020-06-30') AND
-                     (sd_date is NULL or sd_date > '2020-11-30') AND
-                     pre_arr >= nov_arr
-                THEN nov_bal
+       SUM(case when(greatest(first_fb_end_date, add_ph_end_date, rmp_end_date) <= '2020-06-30') AND
+                     (sd_date is NULL or sd_date > '2020-06-30') AND
+                     pre_arr >= jun_arr
+                THEN jun_bal
                 ELSE 0
            END)                                                               AS val_perf,
-       SUM(case when end_date < '2020-11-30' AND
---                      (add_ph_start_date IS NULL or add_ph_end_date < '2020-06-30') AND
-                     (sd_date is NULL or sd_date > '2020-11-30') AND
-                     pre_arr < nov_arr
+       SUM(case when (greatest(first_fb_end_date, add_ph_end_date, rmp_end_date) <= '2020-06-30') AND
+                     (sd_date is NULL or sd_date > '2020-06-30') AND
+                     pre_arr < jun_arr
                 THEN 1
                 ELSE 0
            END)                                                               AS vol_notperf,
-       SUM(case when end_date < '2020-11-30' AND
---                      (add_ph_start_date IS NULL or add_ph_end_date < '2020-06-30') AND
-                     (sd_date is NULL or sd_date > '2020-11-30') AND
-                     pre_arr < nov_arr
-                THEN nov_bal
+       SUM(case when (greatest(first_fb_end_date, add_ph_end_date, rmp_end_date) <= '2020-06-30') AND
+                     (sd_date is NULL or sd_date > '2020-06-30') AND
+                     pre_arr < jun_arr
+                THEN jun_bal
                 ELSE 0
            END)                                                               AS val_notperf,
        SUM(case when type IN ('Default', 'VT - Default', 'VT') AND
-                     sd_date < '2020-11-30'
+                     sd_date <= '2020-06-30' and
+                     sd_date notnull
                 THEN 1
                 ELSE 0
            END)                                                               AS  vol_def,
        SUM(case when type IN ('Default', 'VT - Default', 'VT') AND
-                     sd_date < '2020-11-30'
+                     sd_date <= '2020-06-30' and
+                     sd_date notnull
                 THEN sd_balance
                 ELSE 0
            END)                                                               AS  val_def,
        SUM(case when type = 'Settlement' AND
-                     sd_date < '2020-11-30'
+                     sd_date <= '2020-06-30' AND
+                     sd_date NOTNULL
                 THEN 1
                 ELSE 0
            END)                                                               AS vol_set,
        SUM(case when type = 'Settlement' AND
-                     sd_date < '2020-11-30'
+                     sd_date <= '2020-06-30' AND
+                     sd_date NOTNULL
                 THEN sd_balance
                 ELSE 0
            END)                                                               AS val_set
