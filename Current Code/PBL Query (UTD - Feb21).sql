@@ -775,7 +775,7 @@ GROUP BY 1,2
 order by 1,2;
 
 
------- COVID FBs -----
+--- 6. COVID FBs -----
 
 DROP TABLE IF EXISTS forbearances;
 CREATE temp TABLE forbearances as (
