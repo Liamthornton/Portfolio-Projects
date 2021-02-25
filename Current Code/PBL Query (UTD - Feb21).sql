@@ -23,13 +23,13 @@ CREATE TEMP TABLE app_summary as (
                CASE
                    WHEN (app.platform = 'POS' AND
                          introducer_category IN ('Car Supermarket', 'Franchise Dealer', 'Independent Dealer')) OR
-                        (app.platform = 'POS' AND introducer_category IS NULL) THEN 'Dealer'
+                        (app.platform = 'POS' AND introducer_category IS NULL) THEN '3. Dealer'
                    WHEN (app.platform = 'POS' AND introducer_category IN ('Broker', 'Lead Generator'))
-                       THEN 'Non-Internet Broker'
-                   WHEN (app.platform = 'POS' AND introducer_category = 'Online Broker') THEN 'Aggregator'
+                       THEN '4. Non-Internet Broker'
+                   WHEN (app.platform = 'POS' AND introducer_category = 'Online Broker') THEN '1. Aggregator'
                    WHEN (app.platform = 'DTC' OR introducer_category = 'DTC') OR
-                        (app.platform = 'DTC' AND introducer_category IS NULL) THEN 'DTC'
-                   ELSE 'Other' END as introducer_channel
+                        (app.platform = 'DTC' AND introducer_category IS NULL) THEN '2. DTC'
+                   ELSE '5. Other' END as introducer_channel
         FROM oodledata.applications as app
                  LEFT JOIN oodledata.dealer_dim as dd
                            ON dd.dealer_id = app.introducer_id
@@ -351,13 +351,13 @@ with ltvs as (
 ),
     ltv_buckets as (
     SELECT ltvs.*,
-           case when ltv is null then 'Unknown'
-                when ltv < 0.7 then '0.7'
-                when ltv >= 0.7 and ltv < 0.8 then '0.7-0.79'
-                when ltv >= 0.8 and ltv < 0.9 then '0.8-0.89'
-                when ltv >= 0.9 and ltv < 1 then '0.9-0.99'
-                when ltv >= 1 and ltv < 1.09 then '1-1.09'
-                when ltv >= 1.1 then '1.1'
+           case when ltv is null then '7. Unknown'
+                when ltv < 0.7 then '1. 0.7'
+                when ltv >= 0.7 and ltv < 0.8 then '2. 0.7-0.79'
+                when ltv >= 0.8 and ltv < 0.9 then '3. 0.8-0.89'
+                when ltv >= 0.9 and ltv < 1 then '4. 0.9-0.99'
+                when ltv >= 1 and ltv < 1.09 then '5. 1-1.09'
+                when ltv >= 1.1 then '6. 1.1'
            end as ltv_bucket
     FROM ltvs
     )
@@ -367,22 +367,22 @@ SELECT rep_month,
        SUM(total_finance_amount) as val
 FROM ltv_buckets
 GROUP BY 1,2
-ORDER BY 2;
+ORDER BY 2 ASC;
 
 -- New Business by Fuel Type Breakdown--
 
 with fuel_type_alt as (
     SELECT od.id                                                            as opportunity_id,
            od.oodle_loan__c,
-           CASE WHEN od.fueltype__c IN ('PETROL','Petrol')                                                              THEN 'Petrol'
-                WHEN od.fueltype__c IN ('DIESEL', 'Diesel')                                                             THEN 'Diesel'
-                WHEN od.fueltype__c IN ('ELECTRIC', 'Electric (Battery)')                                               THEN 'Electric'
-                WHEN od.fueltype__c IN ('Petrol/Electric','Diesel/Electric','HYB-PETROL','PETROL/ELE','HYB-DIESEL')     THEN 'Hybrid'
-                WHEN od.fueltype__c IN ('PETROL/GAS','GAS PETROL')                                                      THEN 'LPG'
+           CASE WHEN od.fueltype__c IN ('PETROL','Petrol')                                                              THEN '4. Petrol'
+                WHEN od.fueltype__c IN ('DIESEL', 'Diesel')                                                             THEN '1. Diesel'
+                WHEN od.fueltype__c IN ('ELECTRIC', 'Electric (Battery)')                                               THEN '2. Electric'
+                WHEN od.fueltype__c IN ('Petrol/Electric','Diesel/Electric','HYB-PETROL','PETROL/ELE','HYB-DIESEL')     THEN '3. Hybrid'
+                WHEN od.fueltype__c IN ('PETROL/GAS','GAS PETROL')                                                      THEN '6. LPG'
                 WHEN od.fueltype__c not in ('PETROL','Petrol','DIESEL','Diesel', 'UNKNOWN', 'Petrol/Electric',
                                             'Diesel/Electric','HYB-PETROL','PETROL/ELE','HYB-DIESEL',
                                            'ELECTRIC', 'Electric (Battery)','PETROL/GAS','GAS PETROL')
-                                    AND od.fueltype__c IS NOT NULL                                                      THEN 'Other'
+                                    AND od.fueltype__c IS NOT NULL                                                      THEN '5. Other'
                 ELSE 'Unknown'
            END                                                              AS fuel_type
     FROM salesforce_realtime.opportunity_defeed as od
