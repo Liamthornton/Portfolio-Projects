@@ -62,8 +62,8 @@ CREATE TEMP TABLE app_summary as (
                        on fs.loan_application_id = la.opportunity_id
              LEFT JOIN salesforce_ownbackup_ext.opportunity_calculated AS oc
                        on fs.loan_application_id = oc.id
--- LEFT JOIN salesforce_realtime.opportunity_defeed as od  --ASK JACO FOR PERMISSIONS-
---     on fs.loan_application_id = od.id
+             LEFT JOIN salesforce_realtime.opportunity_defeed as od  --ASK JACO FOR PERMISSIONS-
+                       on fs.loan_application_id = od.id
     WHERE created_date >= (SELECT Prev_Month_Start FROM cr_scratch.lt_PBL_Dates)
       AND created_date <= (SELECT Prev_Month_End FROM cr_scratch.lt_PBL_Dates)
       AND fs.test_application_flag = False
