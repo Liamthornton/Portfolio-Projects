@@ -343,8 +343,8 @@ with ltvs as (
     SELECT last_day(contract_date) as rep_month,
            agreement_code,
            total_finance_amount,
-           (case when (total_finance_amount is null OR car_retail_value is null) then null
-                 else (total_finance_amount / car_retail_value) end) as ltv
+           (case when (total_finance_amount is null OR current_glasses_value is null) then null
+                 else (total_finance_amount / current_glasses_value) end) as ltv
     FROM oodledata_loans.loan_agreements as la
     WHERE la.contract_date >= (SELECT Rep_Month_Start FROM cr_scratch.lt_PBL_Dates) AND
           la.contract_date <= (SELECT Rep_Month_End FROM cr_scratch.lt_PBL_Dates)
