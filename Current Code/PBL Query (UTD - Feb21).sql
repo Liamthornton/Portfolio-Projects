@@ -1,5 +1,5 @@
 DROP TABLE cr_scratch.lt_pbl_dates;
-CREATE TABLE cr_scratch.lt_PBL_Dates  AS (
+CREATE TABLE cr_scratch.lt_pbl_dates  AS (
     WITH MonthRun as (SELECT 1 AS OffsetMonths FROM oodledata_loans.loan_agreements limit 1)
     SELECT TOP 1
            Last_Day(dateadd(months, -2 -OffsetMonths, current_date)) +1         AS Prev_Month_Start
@@ -37,7 +37,7 @@ CREATE TEMP TABLE app_summary as (
     Select TRUNC(Last_Day(created_date))                                                          AS MonthEnd
          , introducer_channel
          , Count(*)                                                                               AS AppVol
-         , Sum(total_finance_amount__c)                                                           AS AppVal
+         , Sum(od.total_finance_amount__c)                                                           AS AppVal
          , Sum(fs.auto_accept)                                                                    AS Auto_Accept
          , Sum(case
                    when credit_search_provider = 'TU' and auto_decline = 1
@@ -50,7 +50,7 @@ CREATE TEMP TABLE app_summary as (
          , Sum(case when Coalesce(auto_refer, 1) = 1 and all_undewrite_accept = 0 THEN 1 END)     AS Manual_Dec
          , Sum(case when Coalesce(auto_refer, 1) = 1 and all_undewrite_accept is null THEN 1 END) AS Manual_Pend
          , Sum(all_undewrite_accept)                                                              AS Final_Accepts
-         , Sum(CASE WHEN all_undewrite_accept = 1 THEN total_finance_amount__c END)               AS Final_Accept_Amt
+         , Sum(CASE WHEN all_undewrite_accept = 1 THEN od.total_finance_amount__c END)            AS Final_Accept_Amt
          , Sum(CASE WHEN all_undewrite_accept = 0 THEN 1 ELSE 0 END)                              AS Final_Declines
          , Sum(CASE WHEN all_undewrite_accept IS NULL THEN 1 ELSE 0 END)                          AS Final_Pending
          , Sum(CASE WHEN total_finance_amount > 0 THEN 1 END)                                     AS New_Business
@@ -116,7 +116,7 @@ WITH Res_Status AS (
         AND olol.loan_id IS NOT NULL
          ),
      Age        AS (
-         SELECT CAST (current_age__c AS decimal(12,2)) as age,
+         SELECT current_age__c as age,
                 opportunity_id
          FROM oodledata_loan_application.oodle_loan_opportunity_link as olol
          LEFT JOIN salesforce_realtime.applicant__c_defeed as ad
@@ -390,16 +390,14 @@ with fuel_type_alt as (
 SELECT last_day(contract_date) as monthend,
        fuel_type,
        count(*),
-       Round(avg(term),2)                                                                                   as avg_term,
-       ROUND(avg(case when la.car_retail_value is not null then la.car_retail_value else null end),2)       as avg_retail_val,
-       ROUND(avg(current_age__c::float),2)                                                                         as avg_age,
+       Round(avg(term),2)                                                                                             as avg_term,
+       ROUND(sum(case when la.current_glasses_value is not null then la.current_glasses_value else null end),2)       as avg_retail_val,
+       ROUND(avg(current_age__c::float),2)                                                                            as avg_age,
        ROUND(avg(CASE WHEN registration_date IS NULL OR contract_date IS NULL THEN NULL
                       ELSE abs(date_diff('months', contract_date, registration_date))::float
-                 END), 2)                                                                                   AS Car_Age,
-       ROUND(avg(od.mileage__c),2)                                                                          as avg_mileage
+                 END), 2)                                                                                             AS Car_Age,
+       ROUND(avg(od.mileage__c),2)                                                                                    as avg_mileage
 FROM oodledata_loans.loan_agreements as la
-LEFT JOIN salesforce_ownbackup_ext.opportunity as o
-    on o.id = la.opportunity_id
 LEFT JOIN oodledata_loan_application.oodle_loan_opportunity_link as olol
     on olol.opportunity_id = la.opportunity_id
 LEFT JOIN salesforce_realtime.applicant__c_defeed as acd
@@ -412,8 +410,6 @@ WHERE la.contract_date>=(SELECT Rep_Month_Start FROM cr_scratch.lt_PBL_Dates)
   AND la.contract_date<=(SELECT Rep_Month_End FROM cr_scratch.lt_PBL_Dates)
 GROUP BY 1,2
 ORDER BY 2 ASC;
-
-
 
 
 --  3. Portfolio Volumes
@@ -742,7 +738,6 @@ where repmon=(SELECT Rep_Month_End FROM cr_scratch.lt_PBL_Dates)
 GROUP BY 1;
 
 
-
 --- 5. Cohort Performance ---
 SELECT sp.RepMon
         , to_char(la.contract_date, 'YYYY')||' Q'||to_char(la.contract_date, 'Q') AS Vintage
@@ -775,222 +770,142 @@ GROUP BY 1,2
 order by 1,2;
 
 
---- 6. COVID FBs -----
-
-DROP TABLE IF EXISTS forbearances;
-CREATE temp TABLE forbearances as (
-    SELECT agreement_code                                                                                               as agreement_code,
-           min(case when f.type in ('Retrospective Payment Holiday','Payment Holiday')
-                    and f.status in ('Agreed','Expired')
-                    and f.booking_status in ('Completed','Reviewed')
-                    then created_date::date
-               end)                                                                                                     as ph_created_date,
-           min(case when f.type in ('Retrospective Payment Holiday','Payment Holiday')
-                    and f.status in ('Agreed','Expired')
-                    and f.booking_status in ('Completed','Reviewed')
-                    then start_date::date
-               end)                                                                                                     as ph_start_date,
-           max(case when f.type in ('Retrospective Payment Holiday','Payment Holiday')
-                    and f.status in ('Agreed','Expired')
-                    and f.booking_status in ('Completed','Reviewed')
-                    then end_date::date
-               end)                                                                                                     as ph_end_date,
-           min(case when f.type in ('Payment Reduction')
-                    and f.status in ('Agreed','Expired')
-                    and f.booking_status in ('Completed','Reviewed')
-                    then created_date::Date
-               end)                                                                                                     as rmp_created_date,
-           min(case when f.type in ('Payment Reduction')
-                    and f.status in ('Agreed','Expired')
-                    and f.booking_status in ('Completed','Reviewed')
-                    then start_date::date
-               end)                                                                                                     as rmp_start_date,
-           max(case when f.type in ('Payment Reduction')
-                    and f.status in ('Agreed','Expired')
-                    and f.booking_status in ('Completed','Reviewed')
-                    then end_date::date
-               end)                                                                                                     as rmp_end_date,
-           min(case when f.type ='Additional Payment Holiday'
-                    and f.status in ('Agreed', 'Expired')
-                    and f.booking_status in ('Completed', 'Reviewed')
-                    then start_date::date
-               end)                                                                                                     as add_ph_start_date,
-           max(case when f.type ='Additional Payment Holiday'
-                    and f.status in ('Agreed', 'Expired')
-                    and f.booking_status in ('Completed', 'Reviewed')
-                    then end_date::date
-               end)                                                                                                     as add_ph_end_date,
-           least(greatest(ph_start_date, ph_created_date),greatest(rmp_start_date, rmp_created_date))                   as first_fb_start_date,
-           least(ph_end_date,rmp_end_date)                                                                              as first_fb_end_date
-    FROM oodledata.forbearance as f
-    GROUP BY 1);
-SELECT *
-FROM forbearances;
-
--- Arrears Status' --
-
--- Settlements and Defaults --
-DROP TABLE IF EXISTS sets_defs;
-CREATE TEMP TABLE sets_defs as (
-    with cases as (
-        SELECT f.agreement_code,
-               type,
-               MIN(date) as sd_date
-        FROM forbearances as f
-        LEFT JOIN oodledata_loans.settlements_and_defaults as sd
-            ON sd.agreement_code = f.agreement_code
-        WHERE type IN ('VT - Default', 'Default', 'VT', 'Settlement') AND
-              sd.date <= (select Rep_Month_End from cr_scratch.lt_PBL_Dates)
-        GROUP BY 1, 2
-    )
-    SELECT cases.agreement_code,
-           type,
-           sd_date,
-           capital_balance as sd_balance,
-           (case when type is not null then 1 else 0 end) as is_defaulted
-    FROM cases
-    LEFT JOIN oodledata_loans.loan_timeline as lt
-        ON lt.agreement_code = cases.agreement_code and lt.date = date_add('months',-1, last_day(cases.sd_date))
-    WHERE sd_date <= (select Rep_Month_End from cr_scratch.lt_PBL_Dates)
-);
-SELECT *
-FROM sets_defs;
-
-
-DROP TABLE IF EXISTS arr_and_bal;
-CREATE TEMP TABLE arr_and_bal as (
-with pre_ph_arr as (
-    SELECT f.agreement_code,
-           CASE
-               WHEN payment_reduction_adjusted_arrears_status = 'Up-to-Date' then -1
-               WHEN payment_reduction_adjusted_arrears_status = '0-Down' then 0
-               WHEN payment_reduction_adjusted_arrears_status = '1-Down' then 1
-               WHEN payment_reduction_adjusted_arrears_status = '2-Down' then 2
-               WHEN payment_reduction_adjusted_arrears_status = '3-Down' then 3
-               WHEN payment_reduction_adjusted_arrears_status = '4-Down' then 4
-               WHEN payment_reduction_adjusted_arrears_status = '5+ Down' then 5
-               ELSE null
-               END as pre_arr
-    FROM forbearances as f
-    LEFT JOIN oodledata_loans.loan_timeline as lt
-        ON lt.agreement_code = f.agreement_code and lt.date = f.first_fb_start_date
-    ),
-    cur_arr as (
-    SELECT f.agreement_code,
-            (CASE
-                   WHEN payment_reduction_adjusted_arrears_status = 'Up-to-Date' then -1
-                   WHEN payment_reduction_adjusted_arrears_status = '0-Down' then 0
-                   WHEN payment_reduction_adjusted_arrears_status = '1-Down' then 1
-                   WHEN payment_reduction_adjusted_arrears_status = '2-Down' then 2
-                   WHEN payment_reduction_adjusted_arrears_status = '3-Down' then 3
-                   WHEN payment_reduction_adjusted_arrears_status = '4-Down' then 4
-                   WHEN payment_reduction_adjusted_arrears_status = '5+ Down' then 5
-                   ELSE null
-            END) as arr_now,
-           capital_balance as bal_now
-    FROM forbearances as f
-    LEFT JOIN oodledata_loans.loan_timeline as lt
-        ON lt.agreement_code = f.agreement_code and lt.date = (select Rep_Month_End from cr_scratch.lt_PBL_Dates)
+--- 6. Covid FB ----
+DROP TABLE IF EXISTS pbl_ph_timeline;
+--- Creating pbl covid timeline ---
+CREATE TEMP TABLE pbl_ph_timeline as (
+--- grabbing first default date ---
+with def_dates as (
+    SELECT ct.agreement_code,
+           min(date) as def_date
+    FROM oodledata.covid_timeline as ct
+    WHERE has_initial_forbearance = 1 AND (is_defaulted or is_vt or is_settled)
+    GROUP BY 1
+),
+--- grabbing default balances ---
+    def_bals as (
+    SELECT dd.agreement_code,
+           def_date,
+           amount as def_bal
+    FROM def_dates as dd
+    LEFT JOIN oodledata_loans.settlements_and_defaults as sd
+        ON sd.agreement_code = dd.agreement_code
 )
--- TABLE DEFINITION --
-SELECT f.*,
-       type,
-       sd_date,
-       sd_balance,
-       (case when is_defaulted = 1 then 1 else 0 end) as has_defaulted,
-       pre_arr,
-       arr_now,
-       bal_now
-FROM forbearances as f
-LEFT JOIN pre_ph_arr as bph
-    ON bph.agreement_code = f.agreement_code
-LEFT JOIN cur_arr as ca
-    ON ca.agreement_code = f.agreement_code
-LEFT JOIN sets_defs as sd
-    on f.agreement_code = sd.agreement_code);
-SELECT *
-FROM arr_and_bal;
+SELECT ct.loan_id,
+       ct.date,
+       ct.capital_balance,
+       ct.is_live,
+       ct.is_settled,
+       ct.is_defaulted,
+       ct.is_vt,
+       ct.payments_down,
+       ct.agreement_code,
+       has_application,
+       in_initial_forbearance,
+       has_initial_forbearance,
+       initial_forbearance_start_date,
+       initial_forbearance_end_date,
+       initial_forbearance_start,
+       initial_forbearance_end,
+       in_forbearance,
+       payment_since_forbearance,
+       payments_down_end_of_initial_forbearance,
+       status,
+       db.def_bal,
+       db.def_date,
+       CASE WHEN NOT(ct.is_vt or ct.is_defaulted or ct.is_settled) AND ct.arrears_status = 'Up-to-Date' then 0
+            WHEN NOT(ct.is_vt or ct.is_defaulted or ct.is_settled) AND ct.arrears_status = '0-Down' then 0.5
+            WHEN NOT(ct.is_vt or ct.is_defaulted or ct.is_settled) AND ct.arrears_status = '1-Down' then 1
+            WHEN NOT(ct.is_vt or ct.is_defaulted or ct.is_settled) AND ct.arrears_status = '2-Down' then 2
+            WHEN NOT(ct.is_vt or ct.is_defaulted or ct.is_settled) AND ct.arrears_status = '3-Down' then 3
+            WHEN NOT(ct.is_vt or ct.is_defaulted or ct.is_settled) AND ct.arrears_status = '4-Down' then 4
+            WHEN NOT(ct.is_vt or ct.is_defaulted or ct.is_settled) AND ct.arrears_status = '5+ Down' then 5
+            WHEN (ct.is_vt or ct.is_settled  or  ct.is_defaulted) then null
+       END as cur_arrs_num,
+       CASE WHEN NOT(lt.is_vt or lt.is_defaulted or lt.is_settled) AND lt.arrears_status = 'Up-to-Date' then 0
+            WHEN NOT(lt.is_vt or lt.is_defaulted or lt.is_settled) AND lt.arrears_status = '0-Down' then 0.5
+            WHEN NOT(lt.is_vt or lt.is_defaulted or lt.is_settled) AND lt.arrears_status = '1-Down' then 1
+            WHEN NOT(lt.is_vt or lt.is_defaulted or lt.is_settled) AND lt.arrears_status = '2-Down' then 2
+            WHEN NOT(lt.is_vt or lt.is_defaulted or lt.is_settled) AND lt.arrears_status = '3-Down' then 3
+            WHEN NOT(lt.is_vt or lt.is_defaulted or lt.is_settled) AND lt.arrears_status = '4-Down' then 4
+            WHEN NOT(lt.is_vt or lt.is_defaulted or lt.is_settled) AND lt.arrears_status = '5+ Down' then 5
+            WHEN (ct.is_vt or ct.is_settled  or  ct.is_defaulted) then null
+       END as pre_ph_arrs_num,
+       lt.date as loan_timeline_join_date
+FROM oodledata.covid_timeline as ct
+LEFT JOIN def_bals as db
+    on db.agreement_code = ct.agreement_code
+LEFT JOIN oodledata_loans.loan_timeline as lt  --- pulling the arrears status at the time of entering forbearance ---
+    on lt.agreement_code = ct.agreement_code and lt.date = ct.initial_forbearance_start_date
+WHERE ct.date = (SELECT rep_month_end FROM cr_scratch.lt_pbl_dates));
 
 
--- MONTHLY REPORT --
-SELECT COUNT(*)                                                                                                                                                         as vol_ph,
-       SUM(greatest(bal_now, sd_balance))                                                                                                                               as val_ph,
-       SUM(case when has_defaulted = 0 and  first_fb_end_date > (SELECT Rep_month_end from cr_scratch.lt_PBL_Dates)
-                THEN 1
-                ELSE 0
-           END)                                                                                                                                                         as vol_first_ph,
-       SUM(case when has_defaulted = 0 AND
-                     first_fb_end_date > (SELECT Rep_month_end from cr_scratch.lt_PBL_Dates)
-                THEN bal_now
-                ELSE 0
-           END)                                                                                                                                                         as val_first_ph,
-       SUM(case when first_fb_end_date <= (SELECT Rep_month_end from cr_scratch.lt_PBL_Dates)
-                         AND
-                     ((add_ph_start_date notnull) or (rmp_start_date != first_fb_start_date AND rmp_start_date notnull))
-                         AND
-                     ((add_ph_start_date <= (SELECT Rep_month_end from cr_scratch.lt_PBL_Dates)) or (rmp_start_date <= (SELECT Rep_month_end from cr_scratch.lt_PBL_Dates)))
-                         AND
-                     ((add_ph_end_date > (SELECT Rep_month_end from cr_scratch.lt_PBL_Dates)) or (rmp_end_date > (SELECT Rep_month_end from cr_scratch.lt_PBL_Dates)))
-                         AND
-                     has_defaulted = 0
-                THEN 1
-                ELSE 0
-           END)                                                                                                                                                         as vol_ext_ph,
-       SUM(case when first_fb_end_date <= (SELECT Rep_month_end from cr_scratch.lt_PBL_Dates)
-                         AND
-                     ((add_ph_start_date is not null) or (rmp_start_date != first_fb_start_date AND rmp_start_date notnull))
-                         AND
-                     ((add_ph_start_date <= (SELECT Rep_month_end from cr_scratch.lt_PBL_Dates)) or (rmp_start_date <= (SELECT Rep_month_end from cr_scratch.lt_PBL_Dates)))
-                         AND
-                     ((add_ph_end_date > (SELECT Rep_month_end from cr_scratch.lt_PBL_Dates))  or (rmp_end_date > (SELECT Rep_month_end from cr_scratch.lt_PBL_Dates)))
-                         AND
-                     has_defaulted = 0
-                THEN bal_now
-                ELSE 0
-           END)                                                                                                                                                         as val_ext_ph,
-       SUM(case when (greatest(first_fb_end_date, add_ph_end_date, rmp_end_date) <= (SELECT Rep_month_end from cr_scratch.lt_PBL_Dates) ) AND
-                     has_defaulted = 0 AND
-                     pre_arr >= arr_now
-                THEN 1
-                ELSE 0
-           END)                                                                                                                                                         AS vol_perf,
-       SUM(case when(greatest(first_fb_end_date, add_ph_end_date, rmp_end_date) <= (SELECT Rep_month_end from cr_scratch.lt_PBL_Dates) ) AND
-                     has_defaulted = 0  AND
-                     pre_arr >= arr_now
-                THEN bal_now
-                ELSE 0
-           END)                                                                                                                                                         AS val_perf,
-       SUM(case when (greatest(first_fb_end_date, add_ph_end_date, rmp_end_date) <= (SELECT Rep_month_end from cr_scratch.lt_PBL_Dates) ) AND
-                     has_defaulted = 0 AND
-                     pre_arr < arr_now
-                THEN 1
-                ELSE 0
-           END)                                                                                                                                                         AS vol_notperf,
-       SUM(case when (greatest(first_fb_end_date, add_ph_end_date, rmp_end_date) <= (SELECT Rep_month_end from cr_scratch.lt_PBL_Dates) ) AND
-                     has_defaulted = 0 AND
-                     pre_arr < arr_now
-                THEN bal_now
-                ELSE 0
-           END)                                                                                                                                                         AS val_notperf,
-       SUM(case when has_defaulted = 1 AND
-                     type IN ('Default', 'VT - Default', 'VT')
-                THEN 1
-                ELSE 0
-           END)                                                                                                                                                         AS  vol_def,
-       SUM(case when has_defaulted = 1 AND
-                     type IN ('Default', 'VT - Default', 'VT')
-                THEN sd_balance
-                ELSE 0
-           END)                                                                                                                                                         AS  val_def,
-       SUM(case when has_defaulted = 1 AND
-                     type = 'Settlement'
-                THEN 1
-                ELSE 0
-           END)                                                                                                                                                         AS vol_set,
-       SUM(case when has_defaulted = 1 AND
-                     type = 'Settlement'
-                THEN sd_balance
-                ELSE 0
-           END)                                                                                                                                                         AS val_set
-FROM arr_and_bal
-WHERE first_fb_start_date <= (SELECT Rep_month_end from cr_scratch.lt_PBL_Dates);
+select last_day(date) as month_end,
+       count(distinct agreement_code) as vol_fb_granted,
+       sum(case when in_initial_forbearance = 1 then 1 else 0 end) as vol_in_initial_fb,
+       sum(case when in_initial_forbearance = 0 AND
+                     in_forbearance = 1 AND
+                     NOT(is_vt or is_defaulted or is_settled)
+                then 1
+                else 0
+           end) as vol_in_ph_ext,
+       sum(case when in_forbearance = 0 AND
+                     NOT (is_vt or is_defaulted or is_settled) and
+                     cur_arrs_num <= pre_ph_arrs_num
+                then 1
+                else 0
+           end) as vol_exited_static_imp,
+       sum(case when (in_forbearance = 0 AND not(is_settled or is_vt) AND (cur_arrs_num > pre_ph_arrs_num))
+                      or
+                     (has_initial_forbearance = 1 AND is_defaulted = 1)
+                then 1
+                else 0
+           end) as vol_exited_deteriorate,
+       sum(case when has_initial_forbearance = 1 AND
+                     in_forbearance = 0 AND
+                     is_vt AND
+                     not(is_defaulted or is_settled)
+                then 1
+                else 0
+           end) as vol_exited_vt,
+       sum(case when has_initial_forbearance = 1 AND
+                     not(is_defaulted or is_vt) AND
+                     is_settled = 1
+                then 1
+                else 0
+           end) as vol_settled,
+       sum(coalesce(nullif(capital_balance, 0), def_bal))                        as val_fb_granted,
+       sum(case when in_initial_forbearance = 1 then capital_balance else 0 end) as val_in_initial_fb,
+       sum(case when in_initial_forbearance = 0 AND
+                     in_forbearance = 1 AND
+                     NOT(is_vt or is_defaulted or is_settled)
+                then capital_balance
+                else 0
+           end) as val_in_ph_ext,
+       sum(case when in_forbearance = 0 AND
+                     NOT (is_vt or is_defaulted or is_settled) and
+                     cur_arrs_num <= pre_ph_arrs_num
+                then capital_balance
+                else 0
+           end) as val_exited_static_imp,
+       sum(case when (in_forbearance = 0 AND not(is_settled or is_vt) AND cur_arrs_num > pre_ph_arrs_num)
+                         or
+                     (is_defaulted = 1)
+                then coalesce(nullif(capital_balance, 0), def_bal)
+                else 0
+           end) as val_exited_deteriorate,
+       sum(case when in_forbearance = 0 AND
+                     is_vt AND
+                     not(is_defaulted or is_settled)
+                then def_bal
+                else 0
+           end) as val_exited_vt,
+       sum(case when in_forbearance = 0 AND is_settled = 1 AND not(is_defaulted or is_vt)
+                then def_bal
+                else 0
+           end) as val_settled
+from pbl_ph_timeline as ppt
+WHERE date = (SELECT rep_month_end FROM cr_scratch.lt_pbl_dates)
+AND has_initial_forbearance
+GROUP BY 1
+ORDER BY 1 ASC;
