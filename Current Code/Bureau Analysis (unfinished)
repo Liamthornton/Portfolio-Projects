@@ -1,0 +1,128 @@
+DROP TABLE IF EXISTS forward_book_og;
+CREATE TEMP TABLE forward_book_og AS (
+    select la.agreement_code,
+           la.opportunity_id,
+           current_age__c::int                                                                                          as age_at_app,
+           fs.affordability_gross_salary::decimal(12,2)                                                                 as oodle_gross_salary,
+           olol.created_date                                                                                            as app_date,
+           la.contract_date,
+           la.total_finance_amount,
+           max_monthly_allowance,
+           (max_monthly_allowance - payment)                                                                            as affordability,
+           (interest_payable/total_finance_amount)                                                                      as itc_profile,
+           (case when full_debt_tm IN ('{ND}', '{OB}') then null else full_debt_tm end)::decimal(12,2)                  as act_unsec_debt,
+           (case when oodle_gross_salary > 0 then (act_unsec_debt / oodle_gross_salary) else null end)::decimal(12,2)   as dti,
+           public_both_gd                                                                                               as ccj_count_all, -- not necessarily active CCJs --
+           public_both_hd                                                                                               as val_act_ccj,
+           public_both_kd                                                                                               as ccj_count_l12m,
+           public_both_ld                                                                                               as ccj_count_l36m,
+           public_both_od                                                                                               as date_last_CCJ,
+           partial_both_or                                                                                              as def_crnt_count,
+           partial_both_rr                                                                                              as def_crnt_val,
+           partial_both_vr                                                                                              as def_count_l12m,
+           partial_both_tpb                                                                                             as def_count_l36m,
+           score_main_jf                                                                                                as bur_score,
+           norse_score,
+           pallas_score,
+           score_decline,
+           policy_decline,
+           auto_accept,
+           auto_decline,
+           auto_refer,
+           all_undewrite_accept,
+           affordability_fail,
+           manual_override
+    from oodledata_loans.loan_agreements as la
+        inner join oodledata_orca.application_pipeline_execution_last as app
+            on app.external_ref = la.opportunity_id
+        inner join transunion_realtime_ext.credit_search_requests csr
+            on app.pipeline_uuid = csr.pipeline_uuid
+        inner join loan_origination_json_ext.vw_response_bsb bsb
+            on csr.credit_searches_id = bsb.creditsearch_id
+        inner join oodledata_loan_application.oodle_loan_opportunity_link as olol
+            on olol.opportunity_id = la.opportunity_id
+        inner join salesforce_realtime.applicant__c_defeed as ad                 -- customer age at app --
+            on olol.applicant_id = ad.id
+        inner JOIN oodledata_loan_application.funnel_summary as fs       -- for income stated on app --
+            ON fs.loan_application_id = olol.opportunity_id
+        inner join salesforce_realtime.opportunity_defeed as od   -- for income verified flag --
+            on od.id = la.opportunity_id
+        inner join oodledata_loans.loan_timeline as lt
+            on lt.agreement_code = la.agreement_code and lt.date = la.contract_date  -- for interest to capital profile --
+        inner join oodledata_loans.credit_score_summary as css -- for internal credit scores --
+            on css.application_id = la.opportunity_id
+    where app.created_at > '2020-08-15'
+);
+SELECT *
+FROM forward_book_og;
+
+SELECT *
+FROM oodledata_assets_and_liabilities.investor_report_cashflow_timeline
+LIMIT 100;
+
+
+-- Back book --
+Drop table if exists back_book_og;
+CREATE TEMP TABLE back_book_og AS (
+    SELECT la.agreement_code,
+           la.opportunity_id,
+--            current_age__c::int                                                                                          as age_at_app,
+           fs.affordability_gross_salary                                                                                as oodle_gross_salary,
+           olol.created_date                                                                                            as app_date,
+           la.contract_date,
+           la.total_finance_amount,
+           max_monthly_allowance,
+           (max_monthly_allowance - payment)                                                                            as affordability,
+           (interest_payable/total_finance_amount)                                                                      as itc_profile,
+--            ful.debt_tm::decimal(12,2)                                                                                   as act_unsec_debt,
+--            (case when (oodle_gross_salary > 0 and oodle_gross_salary notnull)
+--                  then (act_unsec_debt/oodle_gross_salary)
+--             else -1 end)::decimal(12,2)                                                                                 as DTI,
+           both_gd                                                                                                      as ccj_count_all,
+           both_hd                                                                                                      as val_act_ccj,
+           both_kd                                                                                                      as ccj_count_l12m,
+           both_ld                                                                                                      as ccj_count_l36m,
+           both_od                                                                                                      as date_last_CCJ,
+           par.both_or                                                                                                  as def_crnt_count,
+           par.both_rr                                                                                                  as def_crnt_val,
+           par.both_vr                                                                                                  as def_count_l12m,
+           par.both_tpb                                                                                                 as def_count_l36m,
+           sco.main_jf                                                                                                  as bur_score,
+           norse_score,
+           pallas_score,
+           score_decline,
+           policy_decline,
+           auto_accept,
+           auto_decline,
+           auto_refer,
+           all_undewrite_accept,
+           affordability_fail,
+           manual_override
+    FROM oodledata_loans.loan_agreements as la
+    LEFT JOIN transunion_retro.global_search as gs
+        on gs.opportunity_id = la.opportunity_id
+    left join oodledata_loan_application.oodle_loan_opportunity_link as olol
+        on olol.opportunity_id = la.opportunity_id
+    left join salesforce_realtime.applicant__c_defeed as ad                 -- customer age at app --
+        on olol.applicant_id = ad.id
+    LEFT JOIN oodledata_loan_application.funnel_summary as fs       -- income on app + credit decisioning --
+            ON fs.loan_application_id = olol.opportunity_id
+    left join transunion_retro.bsb_applsummary as app_sum                   -- for CCJs at origination --
+        on gs.id = app_sum.global_search_id
+    left join transunion_retro.bsb_public as pub                            -- more on CCJs at orig --
+        on pub.global_search_id = gs.id
+    left join transunion_retro.bsb_partial as par
+        on par.global_search_id = gs.id
+    left join transunion_retro.bsb_full as ful
+        on ful.global_search_id = gs.id
+    left join transunion_retro.bsb_score as sco
+        on sco.global_search_id = gs.id
+--     left join transunion_retro.bsb_applsummary as aps
+--         on aps.global_search_id = gs.id
+    inner join oodledata_loans.loan_timeline as lt
+        on lt.agreement_code = la.agreement_code and lt.date = la.contract_date  -- for interest to capital profile --
+    inner join oodledata_loans.credit_score_summary as css
+        on css.application_id = la.opportunity_id                               -- for internal credit scores --
+--     WHERE la.agreement_code NOT IN (SELECT agreement_code FROM forward_book_og)
+--     AND debt_tm not in ('{ND}', '{OB}')
+);
